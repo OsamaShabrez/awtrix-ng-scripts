@@ -1,0 +1,411 @@
+blueprint:
+  name: Appliance finished — AWTRIX NG, phones, and announcement
+  description: >
+    Detects an appliance cycle from power usage, shows its status on AWTRIX NG,
+    notifies the household, repeats reminders, and waits for acknowledgment.
+    The optional finished-pending helper enables dashboard status cards while
+    keeping existing blueprint automations compatible.
+  domain: automation
+
+  author: Osama Shabrez
+
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    appliance_name:
+      name: Appliance name
+      default: Washing machine
+      selector:
+        text:
+
+    power_sensor:
+      name: Power sensor
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    start_threshold:
+      name: Start threshold (W)
+      description: Power must remain above this value to count as running.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 5000
+          step: 1
+          mode: box
+
+    start_for_minutes:
+      name: Start delay (minutes)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          mode: box
+
+    finish_threshold:
+      name: Finished threshold (W)
+      description: Power must remain below this value to count as finished.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 5000
+          step: 1
+          mode: box
+
+    finish_for_minutes:
+      name: Finish delay (minutes)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          mode: box
+
+    cycle_running_helper:
+      name: Cycle-running helper
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+
+    finished_pending_helper:
+      name: Finished pending acknowledgment helper (optional)
+      description: >
+        Select the input_boolean that should remain on while the finished
+        notification is awaiting acknowledgment. Leave empty for existing
+        automations that do not use a dashboard finished state.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+
+    acknowledge_button:
+      name: Acknowledge button
+      selector:
+        entity:
+          filter:
+            - domain: input_button
+
+    acknowledgement_action:
+      name: Companion App acknowledgment action
+      description: Must be unique per appliance.
+      default: ACK_WASHING_MACHINE
+      selector:
+        text:
+
+    notification_tag:
+      name: Notification tag
+      description: Must be unique per appliance.
+      default: appliance_washing_machine_finished
+      selector:
+        text:
+
+    notification_action:
+      name: Notification action
+      default: notify.household
+      selector:
+        text:
+
+    reminder_minutes:
+      name: Reminder interval (minutes)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          mode: box
+
+    announcement_speaker:
+      name: Announcement speaker
+      selector:
+        entity:
+          filter:
+            - domain: media_player
+
+    tts_engine:
+      name: Text-to-speech engine
+      selector:
+        entity:
+          filter:
+            - domain: tts
+
+    announcement_text:
+      name: Spoken announcement
+      default: The washing machine has finished.
+      selector:
+        text:
+
+    awtrix_app_name:
+      name: AWTRIX NG app name
+      description: Use only letters, numbers, hyphens, and underscores; 32 characters maximum.
+      default: washing_machine
+      selector:
+        text:
+
+    awtrix_icon:
+      name: AWTRIX icon ID (optional)
+      default: ""
+      selector:
+        text:
+
+    awtrix_color:
+      name: AWTRIX text color
+      default: "#FFFFFF"
+      selector:
+        color_rgb:
+
+    awtrix_duration:
+      name: AWTRIX display duration (seconds)
+      default: 10
+      selector:
+        number:
+          min: 3
+          max: 60
+          step: 1
+          mode: box
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: numeric_state
+    id: started
+    entity_id: !input power_sensor
+    above: !input start_threshold
+    for:
+      minutes: !input start_for_minutes
+
+  - trigger: numeric_state
+    id: finished
+    entity_id: !input power_sensor
+    below: !input finish_threshold
+    for:
+      minutes: !input finish_for_minutes
+
+  - trigger: state
+    id: running_sync
+    entity_id: !input cycle_running_helper
+    from: "off"
+    to: "on"
+
+  - trigger: homeassistant
+    event: start
+    id: running_sync_startup
+
+  - trigger: event
+    event_type: automation_reloaded
+    id: running_sync_reload
+
+variables:
+  appliance_name: !input appliance_name
+  awtrix_app_name: !input awtrix_app_name
+  awtrix_icon: !input awtrix_icon
+  awtrix_color: !input awtrix_color
+  awtrix_duration: !input awtrix_duration
+  notification_tag: !input notification_tag
+  announcement_text: !input announcement_text
+  finished_pending_helper: !input finished_pending_helper
+
+actions:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'started' }}"
+          - condition: state
+            entity_id: !input cycle_running_helper
+            state: "off"
+        sequence:
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ finished_pending_helper | default('', true) | string | length > 0
+                     and is_state(finished_pending_helper, 'on') }}
+            then:
+              - action: !input notification_action
+                data:
+                  message: clear_notification
+                  data:
+                    tag: "{{ notification_tag }}"
+
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: "{{ finished_pending_helper }}"
+
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input cycle_running_helper
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id in ['running_sync', 'running_sync_startup', 'running_sync_reload'] }}"
+          - condition: state
+            entity_id: !input cycle_running_helper
+            state: "on"
+        sequence:
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ finished_pending_helper | default('', true) | string | length > 0
+                     and is_state(finished_pending_helper, 'on') }}
+            then:
+              - action: !input notification_action
+                data:
+                  message: clear_notification
+                  data:
+                    tag: "{{ notification_tag }}"
+
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: "{{ finished_pending_helper }}"
+
+          - action: mqtt.publish
+            data:
+              topic: "pixelclock/cmd/apps/pushed/{{ awtrix_app_name }}"
+              retain: false
+              payload: >-
+                {% set app = {
+                  "text": appliance_name ~ " is running",
+                  "durationMs": awtrix_duration | int * 1000,
+                  "textCase": "asTyped",
+                  "textColor": awtrix_color
+                } %}
+                {% if awtrix_icon | default('', true) | string | length > 0 %}
+                  {% set app = dict(app, icon=awtrix_icon) %}
+                {% endif %}
+                {{ app | to_json }}
+
+          - delay:
+              milliseconds: 250
+
+          - action: mqtt.publish
+            data:
+              topic: pixelclock/cmd/apps/switch
+              retain: false
+              payload: '{{ {"name": awtrix_app_name, "fast": true} | to_json }}'
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'finished' }}"
+          - condition: state
+            entity_id: !input cycle_running_helper
+            state: "on"
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input cycle_running_helper
+
+          - if:
+              - condition: template
+                value_template: "{{ finished_pending_helper | default('', true) | string | length > 0 }}"
+            then:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: "{{ finished_pending_helper }}"
+
+          - action: mqtt.publish
+            data:
+              topic: "pixelclock/cmd/apps/pushed/{{ awtrix_app_name }}"
+              retain: false
+              payload: >-
+                {% set app = {
+                  "text": appliance_name ~ " is finished",
+                  "durationMs": awtrix_duration | int * 1000,
+                  "textCase": "asTyped",
+                  "textColor": awtrix_color
+                } %}
+                {% if awtrix_icon | default('', true) | string | length > 0 %}
+                  {% set app = dict(app, icon=awtrix_icon) %}
+                {% endif %}
+                {{ app | to_json }}
+
+          - delay:
+              milliseconds: 250
+
+          - action: mqtt.publish
+            data:
+              topic: pixelclock/cmd/apps/switch
+              retain: false
+              payload: '{{ {"name": awtrix_app_name, "fast": true} | to_json }}'
+
+          - action: !input notification_action
+            data:
+              title: "{{ appliance_name }} finished"
+              message: "{{ appliance_name }} needs to be emptied or sorted."
+              data:
+                tag: "{{ notification_tag }}"
+                actions:
+                  - action: !input acknowledgement_action
+                    title: Mark as sorted
+
+          - action: tts.speak
+            target:
+              entity_id: !input tts_engine
+            data:
+              media_player_entity_id: !input announcement_speaker
+              message: "{{ announcement_text }}"
+
+          - repeat:
+              sequence:
+                - wait_for_trigger:
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: !input acknowledgement_action
+                    - trigger: state
+                      entity_id: !input acknowledge_button
+                  timeout:
+                    minutes: !input reminder_minutes
+                  continue_on_timeout: true
+
+                - if:
+                    - condition: template
+                      value_template: "{{ wait.trigger is none }}"
+                  then:
+                    - action: !input notification_action
+                      data:
+                        title: "{{ appliance_name }} finished"
+                        message: "{{ appliance_name }} still needs attention."
+                        data:
+                          tag: "{{ notification_tag }}"
+                          actions:
+                            - action: !input acknowledgement_action
+                              title: Mark as sorted
+
+                    - action: tts.speak
+                      target:
+                        entity_id: !input tts_engine
+                      data:
+                        media_player_entity_id: !input announcement_speaker
+                        message: "{{ announcement_text }}"
+              until:
+                - condition: template
+                  value_template: "{{ wait.trigger is not none }}"
+
+          - if:
+              - condition: template
+                value_template: "{{ finished_pending_helper | default('', true) | string | length > 0 }}"
+            then:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: "{{ finished_pending_helper }}"
+
+          - action: mqtt.publish
+            data:
+              topic: "pixelclock/cmd/apps/pushed/{{ awtrix_app_name }}"
+              retain: false
+              payload: ""
+
+          - action: !input notification_action
+            data:
+              message: clear_notification
+              data:
+                tag: "{{ notification_tag }}"
