@@ -1,0 +1,430 @@
+# ============================================================================
+# AWTRIX NG - Live Status
+#
+# Home Assistant Blueprint
+#
+# Author: Osama Shabrez
+# Version: 1.0.1
+# License: MIT
+#
+# Description:
+#   Maintains a persistent AWTRIX NG status application based on Home
+#   Assistant triggers and conditions.
+#
+#   The blueprint uses a desired-state model:
+#
+#     Conditions TRUE  -> AWTRIX app exists
+#     Conditions FALSE -> AWTRIX app is removed
+#
+#   The application has no expiration timer and remains active until the
+#   configured conditions are no longer satisfied.
+#
+# Features:
+#   - Native Home Assistant trigger selector
+#   - Native Home Assistant condition selector
+#   - Persistent AWTRIX applications
+#   - AWTRIX app participates in the normal application rotation
+#   - Template-supported messages
+#   - Custom AWTRIX icons
+#   - Configurable periodic reconciliation
+#   - Global clear helper
+#   - Self-restoring status applications
+#
+# ============================================================================
+
+blueprint:
+  name: AWTRIX NG - Live Status
+
+  description: >
+    Maintains a persistent AWTRIX NG status application based on Home
+    Assistant triggers and conditions.
+
+    Every configured trigger causes the status to be evaluated.
+
+    If all configured conditions are true, the AWTRIX application is created
+    or updated.
+
+    If any configured condition is false, the AWTRIX application is removed.
+
+    The AWTRIX application has no expiration timer and remains active until
+    the conditions become false.
+
+    Custom applications remain part of the normal AWTRIX application rotation.
+    The blueprint does not force-switch to the application.
+
+    Multiple triggers and conditions can be configured using the normal
+    Home Assistant automation editor.
+
+    An optional periodic reconciliation provides an additional safety net for
+    conditions that change without an explicit trigger.
+
+  domain: automation
+
+  author: Osama Shabrez
+
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    # =========================================================================
+    # TRIGGERS
+    # =========================================================================
+
+    triggers:
+      name: Triggers
+      description: >
+        One or more triggers that cause the status to be evaluated.
+
+        Use the normal Home Assistant trigger editor.
+
+        Examples:
+          - Power sensor changes
+          - Weather entity changes
+          - Forecast update
+          - Time
+          - Presence changes
+          - Any other Home Assistant trigger
+      selector:
+        trigger:
+
+    # =========================================================================
+    # CONDITIONS
+    # =========================================================================
+
+    conditions:
+      name: Conditions
+      description: >
+        Conditions that determine whether the AWTRIX application should exist.
+
+        ALL configured conditions must be true for the application to exist.
+
+        If all conditions are true:
+          The AWTRIX application is created or updated.
+
+        If any condition is false:
+          The AWTRIX application is removed.
+
+        Leave empty if the application should always exist after a trigger.
+      default: []
+      selector:
+        condition:
+
+    # =========================================================================
+    # RECONCILIATION
+    # =========================================================================
+
+    reconciliation_enabled:
+      name: Enable periodic reconciliation
+      description: >
+        Periodically reevaluate the conditions even if none of the configured
+        triggers fire.
+
+        This is a safety net for conditions that can change without an
+        explicit trigger.
+
+        For immediate clearing, configure a trigger that fires when the
+        underlying entity changes.
+      default: true
+      selector:
+        boolean:
+
+    reconciliation_interval:
+      name: Reconciliation interval
+      description: >
+        Number of minutes between periodic condition checks.
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          mode: box
+
+    # =========================================================================
+    # GLOBAL CLEAR
+    # =========================================================================
+
+    global_clear_helper:
+      name: Global clear helper
+      description: >
+        Input boolean used to clear this AWTRIX application together with all
+        other AWTRIX Live Status applications using the same helper.
+
+        Example:
+          input_boolean.awtrix_clear_all
+
+        Turning the helper ON clears the application and automatically turns
+        the helper OFF again.
+
+        The automation itself remains enabled.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+
+    # =========================================================================
+    # AWTRIX APPLICATION
+    # =========================================================================
+
+    awtrix_app_name:
+      name: AWTRIX app name
+      description: >
+        Unique AWTRIX application name.
+
+        Use only letters, numbers, hyphens and underscores.
+        Maximum 32 characters.
+
+        Every Live Status automation must use a different app name.
+      default: generic_status
+      selector:
+        text:
+
+    awtrix_message:
+      name: AWTRIX message
+      description: >
+        Message displayed by AWTRIX.
+
+        Home Assistant templates are supported.
+
+        Example:
+
+          Washing machine is running
+
+        Or:
+
+          Washing machine {{ states('sensor.washing_machine_power') }} W
+      default: Status active
+      selector:
+        template:
+
+    awtrix_icon:
+      name: AWTRIX icon
+      description: >
+        Optional AWTRIX icon ID.
+
+        Leave empty for no icon.
+      default: ""
+      selector:
+        text:
+
+    awtrix_color:
+      name: AWTRIX text color
+      default: "#FFFFFF"
+      selector:
+        color_rgb:
+
+    # =========================================================================
+    # MQTT
+    # =========================================================================
+
+    awtrix_push_topic:
+      name: AWTRIX custom app topic
+      description: >
+        MQTT topic used to create, update and remove the AWTRIX custom app.
+
+        For your Pixel Clock setup this defaults to:
+
+          pixelclock/cmd/apps/pushed
+      default: pixelclock/cmd/apps/pushed
+      selector:
+        text:
+
+# =============================================================================
+# VARIABLES
+# =============================================================================
+
+variables:
+  app_name: !input awtrix_app_name
+  message: !input awtrix_message
+  icon: !input awtrix_icon
+  color: !input awtrix_color
+
+  push_topic: !input awtrix_push_topic
+
+  reconciliation_enabled: !input reconciliation_enabled
+  reconciliation_interval: !input reconciliation_interval
+
+  global_clear_helper: !input global_clear_helper
+
+# =============================================================================
+# TRIGGERS
+# =============================================================================
+
+triggers:
+  # ---------------------------------------------------------------------------
+  # User-defined triggers
+  #
+  # Any trigger configured in the blueprint UI causes an immediate
+  # desired-state evaluation.
+  # ---------------------------------------------------------------------------
+
+  - triggers: !input triggers
+
+  # ---------------------------------------------------------------------------
+  # Periodic reconciliation
+  #
+  # Runs every minute. The action section determines whether this particular
+  # automation should actually reconcile according to the configured interval.
+  # ---------------------------------------------------------------------------
+
+  - trigger: time_pattern
+    minutes: "*"
+    id: reconciliation
+
+  # ---------------------------------------------------------------------------
+  # Global clear
+  # ---------------------------------------------------------------------------
+
+  - trigger: state
+    entity_id: !input global_clear_helper
+    to: "on"
+    id: global_clear
+
+# =============================================================================
+# ACTIONS
+# =============================================================================
+
+actions:
+  # ===========================================================================
+  # GLOBAL CLEAR
+  # ===========================================================================
+
+  - if:
+      - condition: trigger
+        id: global_clear
+
+    then:
+      - action: mqtt.publish
+        data:
+          topic: "{{ push_topic }}/{{ app_name }}"
+          retain: false
+          payload: ""
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ global_clear_helper }}"
+
+      - stop: Global AWTRIX clear completed.
+
+  # ===========================================================================
+  # PERIODIC RECONCILIATION
+  # ===========================================================================
+  #
+  # User-defined triggers:
+  #   Continue immediately.
+  #
+  # Reconciliation trigger:
+  #   Continue only when enabled and the configured interval is due.
+  # ===========================================================================
+
+  - if:
+      - condition: trigger
+        id: reconciliation
+
+    then:
+      # -----------------------------------------------------------------------
+      # Reconciliation disabled
+      # -----------------------------------------------------------------------
+
+      - if:
+          - condition: template
+            value_template: >
+              {{ not (reconciliation_enabled | bool) }}
+
+        then:
+          - stop: Periodic reconciliation disabled.
+
+      # -----------------------------------------------------------------------
+      # Reconciliation not due yet
+      # -----------------------------------------------------------------------
+
+      - if:
+          - condition: template
+            value_template: >
+              {{
+                now().minute % (reconciliation_interval | int) != 0
+              }}
+
+        then:
+          - stop: Reconciliation not due.
+
+  # ===========================================================================
+  # DESIRED STATE
+  #
+  # The current conditions completely determine whether the app exists.
+  #
+  #     CONDITIONS TRUE
+  #          |
+  #          +----> CREATE / UPDATE APP
+  #
+  #     CONDITIONS FALSE
+  #          |
+  #          +----> REMOVE APP
+  # ===========================================================================
+
+  - choose:
+      # =======================================================================
+      # CONDITIONS TRUE
+      # =======================================================================
+
+      - conditions:
+          - condition: and
+            conditions: !input conditions
+
+        sequence:
+          # -------------------------------------------------------------------
+          # CREATE / UPDATE CUSTOM APP
+          #
+          # IMPORTANT:
+          #
+          # There is intentionally:
+          #
+          #   - no durationMs
+          #   - no duration
+          #   - no switch command
+          #
+          # AWTRIX therefore manages this as a normal custom application,
+          # allowing it to participate in the normal application rotation.
+          # -------------------------------------------------------------------
+
+          - action: mqtt.publish
+            data:
+              topic: "{{ push_topic }}/{{ app_name }}"
+              retain: false
+              payload: >-
+                {% set app = {
+                  "text": message,
+                  "textCase": "asTyped",
+                  "textColor": color
+                } %}
+
+                {% if icon | default('', true) | string | trim | length > 0 %}
+                  {% set app = dict(app, icon=icon) %}
+                {% endif %}
+
+                {{ app | to_json }}
+
+    # ========================================================================
+    # CONDITIONS FALSE
+    # ========================================================================
+
+    default:
+      # -----------------------------------------------------------------------
+      # DELETE CUSTOM APP
+      #
+      # AWTRIX removes the custom app when an empty payload is published to
+      # the corresponding custom-app topic.
+      # -----------------------------------------------------------------------
+
+      - action: mqtt.publish
+        data:
+          topic: "{{ push_topic }}/{{ app_name }}"
+          retain: false
+          payload: ""
+
+# =============================================================================
+# AUTOMATION MODE
+# =============================================================================
+
+mode: restart
+max_exceeded: silent
